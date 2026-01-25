@@ -33,7 +33,7 @@ const ddcNrs = {
 	brightness: "10",
 	contrast: "12",
 };
-const ddcutil_path = "/usr/bin/ddcutil";
+const ddcutil_path = "ddcutil";
 
 function changeSet(display, set, value) {
 	GLib.spawn_command_line_async(
