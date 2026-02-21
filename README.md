@@ -1,5 +1,7 @@
 # Set Monitor DDC Brightness/Contrast
 
+This fork adds support for Dynamic Contrast Ratio (DCR) for lenovo L24-4C monitors
+
 ![screenshot](screenshot.png)
 
 - Slider 1: Brillo / Brightness
