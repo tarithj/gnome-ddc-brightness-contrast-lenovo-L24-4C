@@ -30,180 +30,196 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 const ddcNrs = {
-	brightness: "10",
-	contrast: "12",
+    brightness: "10",
+    contrast: "12",
+    dcr: "EA",
 };
+
 const ddcutil_path = "ddcutil";
 
 function changeSet(display, set, value) {
-	GLib.spawn_command_line_async(
-		`${ddcutil_path} setvcp ${ddcNrs[set]} ${value} --bus ${display.bus}`
-	);
+    GLib.spawn_command_line_async(
+        `${ddcutil_path} setvcp ${ddcNrs[set]} ${value} --bus ${display.bus}`
+    );
 }
 
 let displays = [];
 
 async function getCmdOut(cmd) {
-	return new Promise((resolve, reject) => {
-		let process = Gio.Subprocess.new(
-			cmd,
-			Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
-		);
+    return new Promise((resolve, reject) => {
+        let process = Gio.Subprocess.new(
+            cmd,
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+        );
 
-		process.communicate_utf8_async(null, null, (proc, res) => {
-			try {
-				let [, stdout, stderr] = process.communicate_utf8_finish(res);
-				if (proc.get_successful()) {
-					resolve(stdout);
-				} else {
-					if (stderr) {
-						reject(stderr);
-					} else if (stdout) {
-						resolve(stdout);
-					}
-				}
-			} catch (e) {
-				reject(e);
-			}
-		});
-	});
+        process.communicate_utf8_async(null, null, (proc, res) => {
+            try {
+                let [, stdout, stderr] = process.communicate_utf8_finish(res);
+                if (proc.get_successful()) resolve(stdout);
+                else reject(stderr || stdout);
+            } catch (e) {
+                reject(e);
+            }
+        });
+    });
 }
 
 const Indicator = GObject.registerClass(
-	class Indicator extends PanelMenu.Button {
-		_init() {
-			super._init(0.0, _("Brightness indicator"));
-			this.add_child(
-				new St.Icon({
-					icon_name: "video-display-symbolic",
-					style_class: "system-status-icon",
-				})
-			);
+class Indicator extends PanelMenu.Button {
+    _init() {
+        super._init(0.0, _("Brightness indicator"));
 
-			const getDisplays = async () => {
-				let res;
-				try {
-					res = await getCmdOut(["ddcutil", "detect", "--brief"]);
-				} catch (e) {
-					logError(e, "getCmdOutError");
-				}
-				if (!res) {
-					return;
-				}
-				const displayArray = res.split("\n\n").slice(0, -1);
-				const l = displayArray.length;
-				for (let i = 0; i < l; i++) {
-					const v = displayArray[i];
-					let display = {};
-					display["ddc"] = !v.includes("Invalid");
-					const arr = v.split("\n");
-					display["i"] = i;
-					const nameLine = arr.find((a) => a.includes("Monitor"));
-					const busLine = arr.find((a) => a.includes("I2C bus"));
-					display["name"] =
-						nameLine.split(":")[2].trim() ||
-						"monitor " + (Number(display.i) + 1);
-					display["bus"] = busLine.split("/dev/i2c-")[1].trim();
-					display["sliderTimeouts"] = {};
-					await newDisplayObj(display);
-					displays.push(display);
-				}
-			};
+        this.add_child(
+            new St.Icon({
+                icon_name: "video-display-symbolic",
+                style_class: "system-status-icon",
+            })
+        );
 
-				const newDisplayObj = async (display) => {
-				const makeSlider = async (set) => {
-					let menuItem = new PopupMenu.PopupBaseMenuItem();
+        const getDisplays = async () => {
+            let res;
+            try {
+                res = await getCmdOut(["ddcutil", "detect", "--brief"]);
+            } catch (e) {
+                logError(e);
+                return;
+            }
 
-					menuItem.setOrnament(PopupMenu.Ornament.HIDDEN);
+            const displayArray = res.split("\n\n").slice(0, -1);
 
-					let oldValue = await getCmdOut([
-						"ddcutil",
-						"getvcp",
-						"--brief",
-						ddcNrs[set],
-						"--bus",
-						display.bus,
-					]);
+            for (let i = 0; i < displayArray.length; i++) {
+                const v = displayArray[i];
+                let display = {};
 
-					oldValue = Number(oldValue.split(" ")[3]);
-					let slider = new Slider(oldValue / 100);
+                display.ddc = !v.includes("Invalid");
+                const arr = v.split("\n");
 
-					slider.value = oldValue / 100;
-					let waiting = false;
-					const limit = async () => {
-						if (waiting) return;
-						waiting = true;
-						await new Promise(
-							(r) =>
-							(display.sliderTimeouts[set] = setTimeout(
-								() => {
-									delete display.sliderTimeouts[set];
-									r();
-								},
-								400
-							))
-						);
-						changeSet(display, set, oldValue);
-						waiting = false;
-					};
+                display.i = i;
+                display.name =
+                    arr.find(a => a.includes("Monitor"))
+                        ?.split(":")[2]?.trim() ||
+                    `monitor ${i + 1}`;
 
-					const sliderChange = () => {
-						const value = (slider.value * 100).toFixed(0);
-						oldValue = value;
-						limit();
-					};
-					slider.connect("notify::value", sliderChange);
+                display.bus = arr
+                    .find(a => a.includes("I2C bus"))
+                    ?.split("/dev/i2c-")[1]?.trim();
 
-					menuItem.add_child(
-						new St.Icon({
-							icon_name:
-								set === "brightness"
-									? "display-brightness-symbolic"
-									: "night-light-symbolic",
-							style_class: "monitor-icon",
-						})
-					);
+                display.sliderTimeouts = {};
+                display.sliders = [];
 
-					menuItem.add_child(slider);
-					this.menu.addMenuItem(menuItem);
-				};
+                await newDisplayObj(display);
+                displays.push(display);
+            }
+        };
 
-				let menuLabel = new PopupMenu.PopupMenuItem(display.name, {
-					reactive:false,
-				});
-				this.menu.addMenuItem(menuLabel);
+        const newDisplayObj = async (display) => {
 
-				let separator = new PopupMenu.PopupSeparatorMenuItem();
-				this.menu.addMenuItem(separator);
+            const makeSlider = async (set) => {
+                let menuItem = new PopupMenu.PopupBaseMenuItem();
+                menuItem.setOrnament(PopupMenu.Ornament.HIDDEN);
 
-				if (display.ddc) {
-					await makeSlider("brightness");
-					await makeSlider("contrast");
-				}
-			};
+                let oldValue = await getCmdOut([
+                    "ddcutil",
+                    "getvcp",
+                    "--brief",
+                    ddcNrs[set],
+                    "--bus",
+                    display.bus,
+                ]);
 
-			getDisplays();
-		}
+                oldValue = Number(oldValue.split(" ")[3]);
+                let slider = new Slider(oldValue / 100);
+                slider.value = oldValue / 100;
 
-		destroy() {
-			displays.forEach((d) => {
-				Object.values(d.sliderTimeouts).forEach((timeout) =>
-					clearTimeout(timeout)
-				);
-			});
-			super.destroy();
-		}
-	}
-);
+                display.sliders.push(menuItem);
+
+                let waiting = false;
+
+                const limit = async () => {
+                    if (waiting) return;
+                    waiting = true;
+
+                    await new Promise(r =>
+                        (display.sliderTimeouts[set] = setTimeout(() => {
+                            delete display.sliderTimeouts[set];
+                            r();
+                        }, 400))
+                    );
+
+                    changeSet(display, set, oldValue);
+                    waiting = false;
+                };
+
+                slider.connect("notify::value", () => {
+                    oldValue = (slider.value * 100).toFixed(0);
+                    limit();
+                });
+
+                menuItem.add_child(
+                    new St.Icon({
+                        icon_name:
+                            set === "brightness"
+                                ? "display-brightness-symbolic"
+                                : "night-light-symbolic",
+                        style_class: "monitor-icon",
+                    })
+                );
+
+                menuItem.add_child(slider);
+                this.menu.addMenuItem(menuItem);
+            };
+
+            /* Monitor label */
+            this.menu.addMenuItem(
+                new PopupMenu.PopupMenuItem(display.name, {
+                    reactive: false,
+                })
+            );
+
+            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+            if (display.ddc) {
+
+                /* DCR toggle */
+                let dcrToggle = new PopupMenu.PopupSwitchMenuItem("DCR", false);
+                this.menu.addMenuItem(dcrToggle);
+
+                dcrToggle.connect("toggled", item => {
+                    const enabled = item.state;
+
+                    changeSet(display, "dcr", enabled ? 1 : 0);
+
+                    /* disable sliders if DCR enabled */
+                    display.sliders.forEach(sliderItem => {
+                        sliderItem.setSensitive(!enabled);
+                    });
+                });
+
+                await makeSlider("brightness");
+                await makeSlider("contrast");
+            }
+        };
+
+        getDisplays();
+    }
+
+    destroy() {
+        displays.forEach(d => {
+            Object.values(d.sliderTimeouts).forEach(clearTimeout);
+        });
+        super.destroy();
+    }
+});
 
 export default class MonitorDDCBrightnessExtension extends Extension {
-	enable() {
-		this._indicator = new Indicator();
-		Main.panel.addToStatusArea(this._uuid, this._indicator);
-	}
-	disable() {
-		this._indicator.destroy();
-		displays = [];
-		this._indicator = null;
-	}
+    enable() {
+        this._indicator = new Indicator();
+        Main.panel.addToStatusArea(this._uuid, this._indicator);
+    }
+
+    disable() {
+        this._indicator.destroy();
+        displays = [];
+        this._indicator = null;
+    }
 }
